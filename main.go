@@ -9,15 +9,15 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"time"
 )
 
 var (
-	client      = &http.Client{}
-	cache       = make(map[string]bool)
-	filters     []*regexp.Regexp
-	flagRoot    string
-	flagAddr    string
-	flagVerbose bool
+	client   = &http.Client{}
+	cache    = make(map[string]bool)
+	filters  []*regexp.Regexp
+	flagRoot string
+	flagAddr string
 )
 
 func init() {
@@ -27,10 +27,15 @@ func init() {
 	}
 	flag.StringVar(&flagRoot, "r", "", "cache root directory")
 	flag.StringVar(&flagAddr, "a", ":9999", "proxy bind address")
-	flag.BoolVar(&flagVerbose, "v", false, "verbose output")
 }
 
 func checkFile(path string) (*os.File, error) {
+	for {
+		if _, err := os.Stat(path + "-partial"); os.IsNotExist(err) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -94,24 +99,44 @@ func handle(w http.ResponseWriter, req *http.Request) {
 		}
 		return
 	}
+	var file, partial *os.File
 	var target io.Writer
 	target = w
 	if download {
 		if err := os.MkdirAll(path.Dir(filePath), 0777); err != nil {
 			log.Println(err)
 		} else {
-			file, err := os.Create(filePath)
-			if err != nil {
+			if partial, err = os.Create(filePath + "-partial"); err != nil {
 				log.Println(err)
 			} else {
-				log.Println("Saving", filePath)
-				defer file.Close()
-				target = io.MultiWriter(w, file)
+				partial.Close()
+				file, err = os.Create(filePath)
+				if err != nil {
+					log.Println(err)
+				} else {
+					log.Println("Saving", filePath)
+					target = io.MultiWriter(w, file)
+				}
 			}
 		}
 	}
 	if _, err := io.Copy(target, res.Body); err != nil {
 		log.Println(err)
+		if file != nil {
+			file.Close()
+			if err := os.Remove(filePath); err != nil {
+				log.Println(err)
+			}
+		}
+	} else {
+		if file != nil {
+			file.Close()
+		}
+	}
+	if partial != nil {
+		if err := os.Remove(filePath + "-partial"); err != nil {
+			log.Println(err)
+		}
 	}
 	return
 }
