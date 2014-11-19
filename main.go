@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"sync"
 )
 
@@ -23,6 +24,7 @@ const (
 var (
 	client      = &http.Client{}
 	filters     []*regexp.Regexp
+	rangeRegexp = regexp.MustCompile(`bytes=(\d*)-(\d*)`)
 	flagRoot    string
 	flagAddr    string
 	flagFilters string
@@ -79,16 +81,65 @@ func handle(w http.ResponseWriter, req *http.Request) {
 	log.Println(id, req.RemoteAddr, "requests", req.URL.Path)
 
 	if f := hasCached(req.URL); f != nil {
+		var err error
 		defer f.Close()
-		if fi, err := f.Stat(); err != nil {
+		fi, err := f.Stat()
+		if err != nil {
 			log.Println(id, err)
-		} else {
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", fi.Size()))
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
+		l := fi.Size()
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.WriteHeader(http.StatusOK)
-		log.Println(id, "Using", f.Name())
-		n, err := io.Copy(w, f)
+		rs := req.Header.Get("Range")
+		if rs != "" {
+			var err error
+			var fr int64
+			to := l
+			ms := rangeRegexp.FindStringSubmatch(rs)
+			if ms[1] != "" {
+				fr, err = strconv.ParseInt(ms[1], 10, 64)
+				if err != nil {
+					log.Println(id, err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if fr > l {
+					log.Printf("%s Bad range %s (%d > %d)\n", id, rs, fr, l)
+					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+					return
+				}
+				if _, err := f.Seek(fr, 0); err != nil {
+					log.Println(id, err)
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				l -= fr
+			}
+			if ms[2] != "" {
+				to, err = strconv.ParseInt(ms[2], 10, 64)
+				if err != nil {
+					log.Println(id, err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if to > l {
+					log.Printf("%s Bad range %s (%d > %d)\n", id, rs, to, l)
+					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+					return
+				}
+				l = to
+			}
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", fr, to, l))
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", l))
+			w.WriteHeader(http.StatusPartialContent)
+			log.Printf("%s Using %s (partial: %d-%d/%d)\n", id, f.Name(), fr, to, l)
+		} else {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", l))
+			w.WriteHeader(http.StatusOK)
+			log.Println(id, "Using", f.Name())
+		}
+		n, err := io.CopyN(w, f, l)
 		if err != nil {
 			log.Println(id, err)
 		}
@@ -197,6 +248,9 @@ func hasCached(url *url.URL) *os.File {
 }
 
 func shouldCache(req *http.Request) (string, bool) {
+	if req.Header.Get("Range") != "" {
+		return "", false
+	}
 	for _, r := range filters {
 		if r.MatchString(req.RequestURI) {
 			return "", false
