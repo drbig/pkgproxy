@@ -1,167 +1,232 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
-	"path"
+	"path/filepath"
 	"regexp"
-	"time"
+	"sync"
+)
+
+const (
+	VERSION       = `0.0.1`
+	partialSuffix = `.lock`
 )
 
 var (
-	client   = &http.Client{}
-	cache    = make(map[string]bool)
-	filters  []*regexp.Regexp
-	flagRoot string
-	flagAddr string
+	client      = &http.Client{}
+	filters     []*regexp.Regexp
+	flagRoot    string
+	flagAddr    string
+	flagFilters string
+	reqNum      int
+	mtx         sync.Mutex
 )
 
 func init() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options...] regexp regexp...\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [options...]\n\n", os.Args[0])
 		flag.PrintDefaults()
 	}
-	flag.StringVar(&flagRoot, "r", "", "cache root directory")
 	flag.StringVar(&flagAddr, "a", ":9999", "proxy bind address")
+	flag.StringVar(&flagFilters, "f", "", "path to regexp filters file")
+	flag.StringVar(&flagRoot, "r", "", "cache root directory")
 }
 
-func checkFile(path string) (*os.File, error) {
-	for {
-		if _, err := os.Stat(path + "-partial"); os.IsNotExist(err) {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
+func main() {
+	var err error
+
+	flag.Parse()
+
+	if flagRoot == "" {
+		flagRoot, err = os.Getwd()
+	} else {
+		flagRoot, err = filepath.Abs(flagRoot)
 	}
-	file, err := os.Open(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		} else {
-			return nil, err
-		}
+		log.Fatalln(err)
+		os.Exit(1)
 	}
-	return file, nil
+	log.Println("Cache root:", flagRoot)
+
+	if flagFilters != "" {
+		if err = loadFilters(flagFilters); err != nil {
+			os.Exit(1)
+		}
+	} else {
+		log.Println("No filters file given")
+	}
+
+	http.HandleFunc("/", handle)
+	log.Println("Starting proxy server at", flagAddr)
+	log.Fatalln(http.ListenAndServe(flagAddr, nil))
 }
 
 func handle(w http.ResponseWriter, req *http.Request) {
-	log.Println("Request", req.URL.Path)
-	filePath := path.Join(flagRoot, req.URL.Path)
-	process := true
-	download := false
+	id := fmt.Sprintf("[%3d]", getReqNum())
+	log.Println(id, req.RemoteAddr, "requests", req.URL.Path)
 
-	for _, re := range filters {
-		if re.MatchString(req.URL.Path) {
-			process = false
+	if f := hasCached(req.URL); f != nil {
+		defer f.Close()
+		if fi, err := f.Stat(); err != nil {
+			log.Println(id, err)
+		} else {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", fi.Size()))
 		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		log.Println(id, "Using", f.Name())
+		if _, err := io.Copy(w, f); err != nil {
+			log.Println(id, err)
+		}
+		return
 	}
 
-	if process {
-		file, err := checkFile(filePath)
+	r, err := requestUpstream(req)
+	if err != nil {
+		fmt.Println(id, err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	defer r.Body.Close()
+	w.Header().Set("Content-Length", r.Header.Get("Content-Length"))
+	w.Header().Set("Content-Type", r.Header.Get("Content-Type"))
+	w.WriteHeader(r.StatusCode)
+
+	if r.StatusCode != 200 {
+		if _, err := io.Copy(w, r.Body); err != nil {
+			log.Println(id, err)
+		}
+		return
+	}
+
+	var o io.Writer
+	o = w
+	p, s := shouldCache(req)
+	if s {
+		f, err := prepFile(req.URL)
 		if err != nil {
-			log.Println(err)
-		}
-		if file == nil {
-			download = true
+			log.Println(id, err)
 		} else {
-			defer file.Close()
-			w.Header().Set("Content-Type", "application/octet-stream")
-			w.WriteHeader(http.StatusOK)
-			log.Println("Using", filePath)
-			if _, err := io.Copy(w, file); err != nil {
-				log.Println(err)
-			}
-			return
-		}
-	}
-
-	r, err := http.NewRequest(req.Method, req.RequestURI, nil)
-	if err != nil {
-		log.Println(err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	res, err := client.Do(r)
-	if err != nil {
-		log.Println(err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	defer res.Body.Close()
-	w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
-	w.WriteHeader(res.StatusCode)
-	if res.StatusCode != 200 {
-		if _, err := io.Copy(w, res.Body); err != nil {
-			log.Println(err)
-		}
-		return
-	}
-	var file, partial *os.File
-	var target io.Writer
-	target = w
-	if download {
-		if err := os.MkdirAll(path.Dir(filePath), 0777); err != nil {
-			log.Println(err)
-		} else {
-			if partial, err = os.Create(filePath + "-partial"); err != nil {
-				log.Println(err)
-			} else {
-				partial.Close()
-				file, err = os.Create(filePath)
-				if err != nil {
-					log.Println(err)
-				} else {
-					log.Println("Saving", filePath)
-					target = io.MultiWriter(w, file)
+			defer func() {
+				f.Close()
+				if err := os.Remove(p + partialSuffix); err != nil {
+					log.Println(id, err)
 				}
-			}
+			}()
+			log.Println(id, "Saving", f.Name())
+			o = io.MultiWriter(w, f)
 		}
 	}
-	if _, err := io.Copy(target, res.Body); err != nil {
-		log.Println(err)
-		if file != nil {
-			file.Close()
-			if err := os.Remove(filePath); err != nil {
-				log.Println(err)
-			}
-		}
-	} else {
-		if file != nil {
-			file.Close()
-		}
-	}
-	if partial != nil {
-		if err := os.Remove(filePath + "-partial"); err != nil {
-			log.Println(err)
+	if _, err := io.Copy(o, r.Body); err != nil {
+		log.Println(id, err)
+		if s {
+			defer func() {
+				if err := os.Remove(p); err != nil {
+					log.Println(id, err)
+				}
+			}()
 		}
 	}
 	return
 }
 
-func main() {
-	flag.Parse()
-
-	if flag.NArg() < 1 {
-		flag.Usage()
-		os.Exit(0)
+func loadFilters(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		log.Println(err)
+		return err
 	}
+	defer f.Close()
+	filters = make([]*regexp.Regexp, 0)
+	parseFilters(f)
+	log.Println("Parsed", len(filters), "filters")
+	return nil
+}
 
-	if flagRoot == "" {
-		fr, err := os.Getwd()
+func parseFilters(input io.Reader) {
+	s := bufio.NewScanner(input)
+	for s.Scan() {
+		r, err := regexp.Compile(s.Text())
 		if err != nil {
-			log.Fatalln(err)
-			os.Exit(1)
+			log.Println(err)
+			continue
 		}
-		flagRoot = fr
+		filters = append(filters, r)
 	}
+	return
+}
 
-	for _, arg := range flag.Args() {
-		filters = append(filters, regexp.MustCompile(arg))
+func getReqNum() int {
+	mtx.Lock()
+	defer mtx.Unlock()
+	reqNum++
+	if reqNum > 999 {
+		reqNum = 1
 	}
+	return reqNum
+}
 
-	http.HandleFunc("/", handle)
-	log.Fatalln(http.ListenAndServe(flagAddr, nil))
+func hasCached(url *url.URL) *os.File {
+	f, err := os.Open(filepath.Join(flagRoot, url.Path))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		} else {
+			log.Println(err)
+			return nil
+		}
+	}
+	return f
+}
+
+func shouldCache(req *http.Request) (string, bool) {
+	for _, r := range filters {
+		if r.MatchString(req.RequestURI) {
+			return "", false
+		}
+	}
+	p := filepath.Join(flagRoot, req.URL.Path)
+	if _, err := os.Stat(p + partialSuffix); os.IsExist(err) {
+		return "", false
+	}
+	return p, true
+}
+
+func requestUpstream(req *http.Request) (*http.Response, error) {
+	ureq, err := http.NewRequest(req.Method, req.RequestURI, nil)
+	if err != nil {
+		return nil, err
+	}
+	ures, err := client.Do(ureq)
+	if err != nil {
+		return nil, err
+	}
+	return ures, nil
+}
+
+func prepFile(url *url.URL) (*os.File, error) {
+	p := filepath.Join(flagRoot, url.Path)
+	if err := os.MkdirAll(filepath.Dir(p), 0777); err != nil {
+		return nil, err
+	}
+	l, err := os.Create(p + partialSuffix)
+	if err != nil {
+		return nil, err
+	}
+	l.Close()
+	f, err := os.Create(p)
+	if err != nil {
+		if err := os.Remove(p + partialSuffix); err != nil {
+			log.Println(err)
+		}
+		return nil, err
+	}
+	return f, nil
 }
