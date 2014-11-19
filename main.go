@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"expvar"
 	"flag"
 	"fmt"
 	"io"
@@ -27,6 +28,11 @@ var (
 	flagFilters string
 	reqNum      int
 	mtx         sync.Mutex
+)
+
+var (
+	cntDown  = expvar.NewInt("statsDownBytes")
+	cntCache = expvar.NewInt("statsCacheBytes")
 )
 
 func init() {
@@ -82,15 +88,17 @@ func handle(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.WriteHeader(http.StatusOK)
 		log.Println(id, "Using", f.Name())
-		if _, err := io.Copy(w, f); err != nil {
+		n, err := io.Copy(w, f)
+		if err != nil {
 			log.Println(id, err)
 		}
+		cntCache.Add(n)
 		return
 	}
 
 	r, err := requestUpstream(req)
 	if err != nil {
-		fmt.Println(id, err)
+		log.Println(id, err)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
@@ -124,7 +132,8 @@ func handle(w http.ResponseWriter, req *http.Request) {
 			o = io.MultiWriter(w, f)
 		}
 	}
-	if _, err := io.Copy(o, r.Body); err != nil {
+	n, err := io.Copy(o, r.Body)
+	if err != nil {
 		log.Println(id, err)
 		if s {
 			defer func() {
@@ -134,6 +143,7 @@ func handle(w http.ResponseWriter, req *http.Request) {
 			}()
 		}
 	}
+	cntDown.Add(n)
 	return
 }
 
