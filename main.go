@@ -17,19 +17,20 @@ import (
 )
 
 const (
-	VERSION       = `0.0.1`
-	partialSuffix = `.lock`
+	VERSION = `0.0.1`
 )
 
 var (
 	client      = &http.Client{}
+	barrier     = make(map[string]bool)
 	filters     []*regexp.Regexp
 	rangeRegexp = regexp.MustCompile(`bytes=(\d*)-(\d*)`)
 	flagRoot    string
 	flagAddr    string
 	flagFilters string
 	reqNum      int
-	mtx         sync.Mutex
+	mtxNum      sync.Mutex
+	mtxBarrier  sync.RWMutex
 )
 
 var (
@@ -175,12 +176,8 @@ func handle(w http.ResponseWriter, req *http.Request) {
 		if err != nil {
 			log.Println(id, err)
 		} else {
-			defer func() {
-				f.Close()
-				if err := os.Remove(p + partialSuffix); err != nil {
-					log.Println(id, err)
-				}
-			}()
+			defer barrierSet(false, p)
+			defer f.Close()
 			log.Println(id, "Saving", f.Name())
 			o = io.MultiWriter(w, f)
 		}
@@ -227,8 +224,8 @@ func parseFilters(input io.Reader) {
 }
 
 func getReqNum() int {
-	mtx.Lock()
-	defer mtx.Unlock()
+	mtxNum.Lock()
+	defer mtxNum.Unlock()
 	reqNum++
 	if reqNum > 999 {
 		reqNum = 1
@@ -237,7 +234,11 @@ func getReqNum() int {
 }
 
 func hasCached(url *url.URL) *os.File {
-	f, err := os.Open(filepath.Join(flagRoot, url.Path))
+	p := filepath.Join(flagRoot, url.Path)
+	if barrierCheck(p) {
+		return nil
+	}
+	f, err := os.Open(p)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -259,7 +260,7 @@ func shouldCache(req *http.Request) (string, bool) {
 		}
 	}
 	p := filepath.Join(flagRoot, req.URL.Path)
-	if _, err := os.Stat(p + partialSuffix); os.IsExist(err) {
+	if barrierCheck(p) {
 		return "", false
 	}
 	return p, true
@@ -279,20 +280,33 @@ func requestUpstream(req *http.Request) (*http.Response, error) {
 
 func prepFile(url *url.URL) (*os.File, error) {
 	p := filepath.Join(flagRoot, url.Path)
+	barrierSet(true, p)
 	if err := os.MkdirAll(filepath.Dir(p), 0777); err != nil {
+		barrierSet(false, p)
 		return nil, err
 	}
-	l, err := os.Create(p + partialSuffix)
-	if err != nil {
-		return nil, err
-	}
-	l.Close()
 	f, err := os.Create(p)
 	if err != nil {
-		if err := os.Remove(p + partialSuffix); err != nil {
-			log.Println(err)
-		}
+		barrierSet(false, p)
 		return nil, err
 	}
 	return f, nil
+}
+
+func barrierSet(state bool, path string) {
+	mtxBarrier.Lock()
+	defer mtxBarrier.Unlock()
+	if state {
+		barrier[path] = true
+	} else {
+		delete(barrier, path)
+	}
+	return
+}
+
+func barrierCheck(path string) bool {
+	mtxBarrier.RLock()
+	defer mtxBarrier.RUnlock()
+	_, ok := barrier[path]
+	return ok
 }
