@@ -86,7 +86,7 @@ func main() {
 // incoming request should be passed upstream.
 func handle(w http.ResponseWriter, req *http.Request) {
 	id := fmt.Sprintf("[%3d]", getReqNum())
-	log.Println(id, req.RemoteAddr, "requests", req.URL.Path)
+	log.Println(id, req.RemoteAddr, "requests", req.RequestURI)
 
 	if f := hasCached(id, req.URL); f != nil {
 		d, err := tryServeCached(id, w, req, f)
