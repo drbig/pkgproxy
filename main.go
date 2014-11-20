@@ -1,3 +1,5 @@
+// pkgproxy is a caching transparent HTTP proxy intended to save time and bandwidth
+// spent on upgrading OS installations.
 package main
 
 import (
@@ -17,23 +19,23 @@ import (
 )
 
 const (
-	VERSION = `0.0.2`
+	VERSION = `0.0.2` // current version
 )
 
 var (
-	client      = &http.Client{}
-	filters     []*regexp.Regexp
-	rangeRegexp = regexp.MustCompile(`bytes=(\d*)-(\d*)`)
-	flagRoot    string
-	flagAddr    string
-	flagFilters string
-	reqNum      int
-	mtxNum      sync.Mutex
+	client      = &http.Client{}                          // used for upstream requests
+	filters     []*regexp.Regexp                          // holds regexp filters applied to RequestURI
+	rangeRegexp = regexp.MustCompile(`bytes=(\d*)-(\d*)`) // for basic support of partial content requests
+	flagRoot    string                                    // cache root directory
+	flagAddr    string                                    // proxy bind address
+	flagFilters string                                    // path to filters file
+	reqNum      int                                       // last incoming request id
+	mtxNum      sync.Mutex                                // mutex for the above
 )
 
 var (
-	cntDown  = expvar.NewInt("statsDownBytes")
-	cntCache = expvar.NewInt("statsCacheBytes")
+	cntDown  = expvar.NewInt("statsDownBytes")  // counts significant bytes downloaded from upstream
+	cntCache = expvar.NewInt("statsCacheBytes") // counts significant bytes served from cached files
 )
 
 func init() {
@@ -77,6 +79,9 @@ func main() {
 	sigwait()
 }
 
+// handle processes the incoming request.
+// The general goal is that if anything related to the local cache fails the
+// incoming request should be passed upstream.
 func handle(w http.ResponseWriter, req *http.Request) {
 	id := fmt.Sprintf("[%3d]", getReqNum())
 	log.Println(id, req.RemoteAddr, "requests", req.URL.Path)
@@ -140,6 +145,9 @@ func handle(w http.ResponseWriter, req *http.Request) {
 	return
 }
 
+// loadFilters tries to open the filters file and parse it.
+// If the file can't be opened the previously set filters (if any) will
+// still be there.
 func loadFilters(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -153,6 +161,7 @@ func loadFilters(path string) error {
 	return nil
 }
 
+// parseFilters tries to parse and set filter regexps.
 func parseFilters(input io.Reader) {
 	s := bufio.NewScanner(input)
 	for s.Scan() {
@@ -166,6 +175,8 @@ func parseFilters(input io.Reader) {
 	return
 }
 
+// getReqNum returns the current request id.
+// The request ids are always between 1 - 999.
 func getReqNum() int {
 	mtxNum.Lock()
 	defer mtxNum.Unlock()
@@ -176,6 +187,8 @@ func getReqNum() int {
 	return reqNum
 }
 
+// hasCached checks if we have a complete file for the given path, and if so
+// returns an opened file handle.
 func hasCached(id string, url *url.URL) *os.File {
 	p := filepath.Join(flagRoot, url.Path)
 	if barrierCheck(p) {
@@ -193,6 +206,8 @@ func hasCached(id string, url *url.URL) *os.File {
 	return f
 }
 
+// tryServeCached tries to serve content from a cached file.
+// It handles single-range partial content requests.
 func tryServeCached(id string, w http.ResponseWriter, req *http.Request, f *os.File) (bool, error) {
 	defer f.Close()
 	fi, err := f.Stat()
@@ -245,6 +260,9 @@ func tryServeCached(id string, w http.ResponseWriter, req *http.Request, f *os.F
 	return true, err
 }
 
+// shouldCache checks if the upstream data should be saved to the local cache.
+// It won't cache partial requests, stuff that matches the filters, or if the
+// data is already being cached to disk.
 func shouldCache(req *http.Request) (string, bool) {
 	if req.Header.Get("Range") != "" {
 		return "", false
@@ -261,6 +279,7 @@ func shouldCache(req *http.Request) (string, bool) {
 	return p, true
 }
 
+// requestUpstream tries to pass the incoming request to the real target.
 func requestUpstream(req *http.Request) (*http.Response, error) {
 	ureq, err := http.NewRequest(req.Method, req.RequestURI, req.Body)
 	if err != nil {
@@ -273,6 +292,7 @@ func requestUpstream(req *http.Request) (*http.Response, error) {
 	return ures, nil
 }
 
+// prepFile tries to setup a file for the upstream data to cache.
 func prepFile(url *url.URL) (*os.File, error) {
 	p := filepath.Join(flagRoot, url.Path)
 	barrierSet(true, p)
