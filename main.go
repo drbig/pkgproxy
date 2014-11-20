@@ -1,3 +1,5 @@
+// See LICENSE.txt for licensing information.
+
 // pkgproxy is a caching transparent HTTP proxy intended to save time and bandwidth
 // spent on upgrading OS installations.
 package main
