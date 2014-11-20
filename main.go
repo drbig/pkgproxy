@@ -22,7 +22,6 @@ const (
 
 var (
 	client      = &http.Client{}
-	barrier     = make(map[string]bool)
 	filters     []*regexp.Regexp
 	rangeRegexp = regexp.MustCompile(`bytes=(\d*)-(\d*)`)
 	flagRoot    string
@@ -30,7 +29,6 @@ var (
 	flagFilters string
 	reqNum      int
 	mtxNum      sync.Mutex
-	mtxBarrier  sync.RWMutex
 )
 
 var (
@@ -286,22 +284,4 @@ func prepFile(url *url.URL) (*os.File, error) {
 		return nil, err
 	}
 	return f, nil
-}
-
-func barrierSet(state bool, path string) {
-	mtxBarrier.Lock()
-	defer mtxBarrier.Unlock()
-	if state {
-		barrier[path] = true
-	} else {
-		delete(barrier, path)
-	}
-	return
-}
-
-func barrierCheck(path string) bool {
-	mtxBarrier.RLock()
-	defer mtxBarrier.RUnlock()
-	_, ok := barrier[path]
-	return ok
 }
