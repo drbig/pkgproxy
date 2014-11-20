@@ -1,0 +1,9 @@
+/.*\.db
+/.*\.sig
+/.*\.gpg
+/Index.*
+/Translation-.*
+/Packages.*
+/Release.*
+/Sources.*
+/meta-release-.*
