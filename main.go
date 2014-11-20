@@ -64,7 +64,7 @@ func main() {
 		log.Fatalln(err)
 		os.Exit(1)
 	}
-	log.Println("Cache root:", flagRoot)
+	log.Println("Cache root at", flagRoot)
 
 	if flagFilters != "" {
 		if err = loadFilters(flagFilters); err != nil {
@@ -159,7 +159,7 @@ func loadFilters(path string) error {
 	defer f.Close()
 	filters = make([]*regexp.Regexp, 0)
 	parseFilters(f)
-	log.Println("Parsed", len(filters), "filters")
+	log.Println("Parsed", len(filters), "filters at", path)
 	return nil
 }
 
