@@ -96,6 +96,21 @@ func handle(w http.ResponseWriter, req *http.Request) {
 			var fr int64
 			to := l
 			ms := rangeRegexp.FindStringSubmatch(rs)
+			if ms[2] != "" {
+				to, err = strconv.ParseInt(ms[2], 10, 64)
+				if err != nil {
+					log.Println(id, err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				to++
+				if to > fi.Size() {
+					log.Printf("%s Bad range %s (%d > %d)\n", id, rs, to, l)
+					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+					return
+				}
+				l = to
+			}
 			if ms[1] != "" {
 				fr, err = strconv.ParseInt(ms[1], 10, 64)
 				if err != nil {
@@ -103,7 +118,7 @@ func handle(w http.ResponseWriter, req *http.Request) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
-				if fr > fi.Size() {
+				if fr > l {
 					log.Printf("%s Bad range %s (%d > %d)\n", id, rs, fr, l)
 					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 					return
@@ -115,24 +130,10 @@ func handle(w http.ResponseWriter, req *http.Request) {
 				}
 				l -= fr
 			}
-			if ms[2] != "" {
-				to, err = strconv.ParseInt(ms[2], 10, 64)
-				if err != nil {
-					log.Println(id, err)
-					w.WriteHeader(http.StatusBadRequest)
-					return
-				}
-				if to > fi.Size() {
-					log.Printf("%s Bad range %s (%d > %d)\n", id, rs, to, l)
-					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-					return
-				}
-				l -= to
-			}
-			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", fr, to, l))
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", fr, to, fi.Size()))
 			w.Header().Set("Content-Length", strconv.FormatInt(l, 10))
 			w.WriteHeader(http.StatusPartialContent)
-			log.Printf("%s Using %s (partial: %d-%d/%d)\n", id, f.Name(), fr, to, l)
+			log.Printf("%s Using %s (partial: %s)\n", id, f.Name(), rs)
 		} else {
 			w.Header().Set("Content-Length", strconv.FormatInt(l, 10))
 			w.WriteHeader(http.StatusOK)
