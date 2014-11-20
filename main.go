@@ -81,7 +81,6 @@ func handle(w http.ResponseWriter, req *http.Request) {
 	log.Println(id, req.RemoteAddr, "requests", req.URL.Path)
 
 	if f := hasCached(req.URL); f != nil {
-		var err error
 		defer f.Close()
 		fi, err := f.Stat()
 		if err != nil {
@@ -104,7 +103,7 @@ func handle(w http.ResponseWriter, req *http.Request) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
-				if fr > l {
+				if fr > fi.Size() {
 					log.Printf("%s Bad range %s (%d > %d)\n", id, rs, fr, l)
 					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 					return
@@ -123,19 +122,19 @@ func handle(w http.ResponseWriter, req *http.Request) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
-				if to > l {
+				if to > fi.Size() {
 					log.Printf("%s Bad range %s (%d > %d)\n", id, rs, to, l)
 					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 					return
 				}
-				l = to
+				l -= to
 			}
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", fr, to, l))
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", l))
+			w.Header().Set("Content-Length", strconv.FormatInt(l, 10))
 			w.WriteHeader(http.StatusPartialContent)
 			log.Printf("%s Using %s (partial: %d-%d/%d)\n", id, f.Name(), fr, to, l)
 		} else {
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", l))
+			w.Header().Set("Content-Length", strconv.FormatInt(l, 10))
 			w.WriteHeader(http.StatusOK)
 			log.Println(id, "Using", f.Name())
 		}
