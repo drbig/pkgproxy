@@ -153,8 +153,10 @@ func handle(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	w.Header().Set("Content-Length", r.Header.Get("Content-Length"))
-	w.Header().Set("Content-Type", r.Header.Get("Content-Type"))
+	rh := w.Header()
+	for k, v := range r.Header {
+		rh.Set(k, v[0])
+	}
 	w.WriteHeader(r.StatusCode)
 
 	if r.StatusCode != 200 {
@@ -263,7 +265,7 @@ func shouldCache(req *http.Request) (string, bool) {
 }
 
 func requestUpstream(req *http.Request) (*http.Response, error) {
-	ureq, err := http.NewRequest(req.Method, req.RequestURI, nil)
+	ureq, err := http.NewRequest(req.Method, req.RequestURI, req.Body)
 	if err != nil {
 		return nil, err
 	}
