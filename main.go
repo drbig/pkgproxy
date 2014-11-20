@@ -72,7 +72,9 @@ func main() {
 
 	http.HandleFunc("/", handle)
 	log.Println("Starting proxy server at", flagAddr)
-	log.Fatalln(http.ListenAndServe(flagAddr, nil))
+	go log.Fatalln(http.ListenAndServe(flagAddr, nil))
+
+	sigwait()
 }
 
 func handle(w http.ResponseWriter, req *http.Request) {
