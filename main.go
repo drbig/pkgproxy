@@ -81,7 +81,7 @@ func handle(w http.ResponseWriter, req *http.Request) {
 	id := fmt.Sprintf("[%3d]", getReqNum())
 	log.Println(id, req.RemoteAddr, "requests", req.URL.Path)
 
-	if f := hasCached(req.URL); f != nil {
+	if f := hasCached(id, req.URL); f != nil {
 		d, err := tryServeCached(id, w, req, f)
 		if err != nil {
 			log.Println(id, err)
@@ -176,7 +176,7 @@ func getReqNum() int {
 	return reqNum
 }
 
-func hasCached(url *url.URL) *os.File {
+func hasCached(id string, url *url.URL) *os.File {
 	p := filepath.Join(flagRoot, url.Path)
 	if barrierCheck(p) {
 		return nil
@@ -186,7 +186,7 @@ func hasCached(url *url.URL) *os.File {
 		if os.IsNotExist(err) {
 			return nil
 		} else {
-			log.Println(err)
+			log.Println(id, err)
 			return nil
 		}
 	}
@@ -241,9 +241,6 @@ func tryServeCached(id string, w http.ResponseWriter, req *http.Request, f *os.F
 		log.Println(id, "Using", f.Name())
 	}
 	n, err := io.CopyN(w, f, l)
-	if err != nil {
-		log.Println(id, err)
-	}
 	cntCache.Add(n)
 	return true, err
 }
