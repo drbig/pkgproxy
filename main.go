@@ -91,7 +91,7 @@ func handle(w http.ResponseWriter, req *http.Request) {
 	if f := hasCached(id, req.URL); f != nil {
 		d, err := tryServeCached(id, w, req, f)
 		if err != nil {
-			log.Println(id, err)
+			log.Println(id, "cache write:", err)
 		}
 		if d {
 			return
@@ -105,15 +105,22 @@ func handle(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	defer r.Body.Close()
+	ch := w.(http.CloseNotifier).CloseNotify()
+	go func() {
+		<-ch
+		log.Println(id, "Client closed connection")
+	}()
 	rh := w.Header()
 	for k, v := range r.Header {
+		//log.Println(id, "Header:", k, v[0])
 		rh.Set(k, v[0])
 	}
 	w.WriteHeader(r.StatusCode)
+	//log.Println(id, "Status code:", r.StatusCode)
 
 	if r.StatusCode != 200 {
 		if _, err := io.Copy(w, r.Body); err != nil {
-			log.Println(id, err)
+			log.Println(id, "non-200 write:", err)
 		}
 		return
 	}
@@ -134,7 +141,7 @@ func handle(w http.ResponseWriter, req *http.Request) {
 	}
 	n, err := io.Copy(o, r.Body)
 	if err != nil {
-		log.Println(id, err)
+		log.Println(id, "upstream write:", err)
 		if s {
 			defer func() {
 				if err := os.Remove(p); err != nil {
