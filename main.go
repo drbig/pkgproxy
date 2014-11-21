@@ -112,11 +112,11 @@ func handle(w http.ResponseWriter, req *http.Request) {
 	}()
 	rh := w.Header()
 	for k, v := range r.Header {
-		//log.Println(id, "Header:", k, v[0])
+		//log.Println(id, "Response header:", k, v[0])
 		rh.Set(k, v[0])
 	}
+	log.Println(id, "Upstream replied", r.StatusCode)
 	w.WriteHeader(r.StatusCode)
-	//log.Println(id, "Status code:", r.StatusCode)
 
 	if r.StatusCode != 200 {
 		if _, err := io.Copy(w, r.Body); err != nil {
@@ -293,6 +293,10 @@ func requestUpstream(req *http.Request) (*http.Response, error) {
 	ureq, err := http.NewRequest(req.Method, req.RequestURI, req.Body)
 	if err != nil {
 		return nil, err
+	}
+	for k, v := range req.Header {
+		//log.Println(id, "Request header:", k, v[0])
+		ureq.Header.Set(k, v[0])
 	}
 	ures, err := client.Do(ureq)
 	if err != nil {
