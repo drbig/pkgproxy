@@ -1,4 +1,4 @@
-# pkgproxy
+# pkgproxy [![Build Status](https://travis-ci.org/drbig/pkgproxy.svg)](https://travis-ci.org/drbig/pkgproxy)
 
 PkgProxy is a caching transparent HTTP proxy intended to save time and bandwidth spent on upgrading OS installations. It's written in Go.
 
@@ -7,12 +7,12 @@ Features:
 - Minimal server and client configuration required
 - No root or equivalent needed anywhere
 - Simple but flexible
-- Good performance from small to mid-sized client pools (i.e. not Google-scale yet)
+- Good performance for small to mid-sized client pools (i.e. not Google-scale yet)
 - Works on all major modern OSes, no dependencies
 
 ## What it does
 
-PkgProxy is a HTTP proxy designed specifically for caching packages as used by virtually all modern Unix-like systems. When you start it you can specify a file with Regexp-based filters for URIs that shouldn't be cached - e.g. the index or database files of your distro. Once the path has been successfully saved to disk next request for the same path will be served from the file (including partial content requests).
+PkgProxy is a HTTP proxy designed specifically for caching packages as used by virtually all modern Unix-like systems. When you start it you can specify a file with Regexp-based filters for URIs that shouldn't be cached - e.g. the index or database files of your distro. Once a path has been successfully saved to disk next request for the same path will be served from the file (including partial content requests).
 
 The general philosophy is that each request should be satisfied, so even if there is a local problem the request is passed upstream and the response is copied back to the client.
 
@@ -57,7 +57,9 @@ And then for package-related tasks:
         environment: pkg_proxy_env
 
 
-And that's it. You'll cache everything, including the various Index files. Want to clean the cache? No problem:
+And that's it. You'll cache everything, including the various index files.
+
+Want to clean the cache? No problem:
 
     $ rm -rf packages/*
 
